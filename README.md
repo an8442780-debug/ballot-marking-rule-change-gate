@@ -1,34 +1,54 @@
 # Ballot Marking Rule Change Gate
 
-Ballot Marking Rule Change Gate is a reusable GenLayer Intelligent Contract primitive for deciding whether a publisher's voter-help revision still matches one sealed official instruction vector for the same jurisdiction, election, and official version.
+An auditable GenLayer Intelligent Contract that decides whether a publisher's voter-help revision still matches a sealed official instruction vector for the same jurisdiction, election, and official version.
 
-It is deliberately limited to explicit ballot-action instructions: marking, overvote/correction, assistance, return role, and masking/privacy instructions. It does not decide voter eligibility, candidate choice, winner, turnout, or legal compliance.
+## Live Deployment
 
-## Lifecycle
+- Network: GenLayer Studionet, chain ID `61999`.
+- Contract: `0x1751Efa29Aaa0E4BaDF3a3f0e5d4E69a31878d10` ([Studio Explorer](https://explorer-studio.genlayer.com/address/0x1751Efa29Aaa0E4BaDF3a3f0e5d4E69a31878d10)).
+- Deployer: `0xeF5D2119416A2f5afa35dCFA209766EFC1BE5902`.
+- Deployment: [`0x5f960598a18c887b5b811dce54ec42ecb61a2f54a9c92ac2564cf094d38fcc60`](https://explorer-studio.genlayer.com/tx/0x5f960598a18c887b5b811dce54ec42ecb61a2f54a9c92ac2564cf094d38fcc60).
+- Exact deployed source SHA-256: `19A5925E8C281585D0E8F95DBFC63D0EB7AAD5D1E19431EDD4CC7F9A81411575`.
 
-The election authority configures one HTTPS source host and registers a rule with its jurisdiction, election, official version, source URL, source text, publisher, observer, and publication workflow. The authority seals the exact UTF-8 SHA-256 hash of the official text bytes as submitted; ballot text is not whitespace-normalized before hashing. The publisher submits a bounded help revision with its own jurisdiction/election/version metadata, allowlisted source URL, text, and hash. The publication workflow calls `assess`.
+| Evidence | Result |
+| --- | --- |
+| Fresh equal-vector S01b assess [`0x1a6f76322c6e4331105f0748096642e65368c21bf5fc29882f447394fe643f02`](https://explorer-studio.genlayer.com/tx/0x1a6f76322c6e4331105f0748096642e65368c21bf5fc29882f447394fe643f02) | `FINALIZED / SUCCESS`, `3 agree / 2 idle`, authoritative `PUBLISH_CURRENT` readback |
+| Fresh assistance-difference S04b assess [`0x8d8ed9e50453db83e7f543112b968e5a88232d81494a98ed69398b612d8e8a8c`](https://explorer-studio.genlayer.com/tx/0x8d8ed9e50453db83e7f543112b968e5a88232d81494a98ed69398b612d8e8a8c) | `FINALIZED / SUCCESS`, `3 agree / 2 idle`, authoritative `HOLD_STALE_RULE` readback |
+| Invalid-hash S10 [`0x16171e104400cf1c3e95214806377a908c492f7367a9e04959c29ebbb5553009`](https://explorer-studio.genlayer.com/tx/0x16171e104400cf1c3e95214806377a908c492f7367a9e04959c29ebbb5553009) | Deterministic finalized error; pre/post rule snapshots were unchanged |
 
-Assessment runs one nondeterministic extraction inside a leader/validator boundary. Validators independently extract both texts and compare every normalized action field, including the sorted `masks` array. The boolean outcome is derived deterministically from the accepted vectors and exact metadata:
+The complete scenario record, including exact inputs, historical failure isolation, hashes, readbacks, and Explorer links, is in [verification/e2e-matrix.md](verification/e2e-matrix.md).
 
-- `PUBLISH_CURRENT`: metadata and every action field match, with no ambiguous field.
-- `HOLD_STALE_RULE`: metadata or any action field differs.
-- `MANUAL_AUTHORITY_CHECK`: vectors match but a required action field is omitted or ambiguous.
+## Problem and Why GenLayer
 
-Malformed output, unavailable/ambiguous extraction, validator disagreement, prompt-boundary markers, unauthorized calls, non-allowlisted sources, bad hashes, and invalid lifecycle transitions fail closed. Replaying identical register/seal/submit/supersede calls is idempotent; conflicting replays revert. A publisher may correct a held or manually flagged revision; the authority may supersede a sealed rule.
+Ballot-help revisions can silently change a voter action such as how to mark a choice, correct an overvote, request assistance, return a ballot, or protect privacy. This contract stores one sealed official text and compares a bounded publisher revision against the official action vector before publication.
 
-## API and oracle surface
+GenLayer is useful here because validators independently extract meaning from source text and bind their agreement to the consequential status transition. A conventional backend is sufficient when the input is already structured, trusted, and deterministically validated; GenLayer is not needed for ordinary CRUD, private editorial workflows, or legal interpretation.
 
-- `register_rule(...)` — authority-only rule registration.
-- `seal_official(rule_id, official_evidence_hash)` — authority-only official-source sealing.
-- `submit_help(...)` — authorized publisher submission.
-- `assess(rule_id)` — authorized publication-workflow consensus assessment.
-- `correct_help(...)` — publisher correction after a hold/manual result.
-- `supersede_rule(rule_id)` — authority-only terminal supersession.
-- `read_status(rule_id)` — deterministic status oracle for publication workflows.
-- `read_action_vectors(rule_id)` — stored official/submitted vectors for observers and downstream tooling.
-- `read_rule(rule_id)` — jurisdiction, election, version, lifecycle, and evidence-hash readback.
+## How It Works
 
-Builder integrations can use `read_status` as a release gate, use `read_action_vectors` to display the exact fields validators bound, or use `read_rule` to verify that a publication is for the intended election/version before consuming the result.
+1. An authority registers a rule and seals the exact UTF-8 SHA-256 of the official text.
+2. An authorized publisher submits bounded help text, metadata, source URL, and its exact hash.
+3. The workflow calls `assess`; the leader and validators extract all five action fields from both texts.
+4. Accepted vectors are compared deterministically with metadata and provenance hashes before state is written.
+5. The oracle exposes `PUBLISH_CURRENT`, `HOLD_STALE_RULE`, or `MANUAL_AUTHORITY_CHECK`.
+
+## State, Lifecycle, and Invariants
+
+The lifecycle is `REGISTERED -> OFFICIAL_SEALED -> HELP_SUBMITTED -> ASSESSED`, with correction after a hold/manual result and terminal authority supersession. Stored fields include jurisdiction, election ID, official version, source and publisher metadata, exact evidence hashes, both normalized vectors, assessment state, status, and supersession state.
+
+The contract fails closed on malformed or ambiguous extraction, validator disagreement, prompt-boundary markers, unauthorized calls, non-allowlisted HTTPS sources, bad hashes, and invalid transitions. Identical valid replays are idempotent; conflicting replays and post-supersession writes revert.
+
+## Public API
+
+Writes: `register_rule`, `seal_official`, `submit_help`, `assess`, `correct_help`, and `supersede_rule`.
+
+Oracle views: `read_status` is the integrator release gate; `read_action_vectors` exposes the exact stored fields validators bound; `read_rule` returns lifecycle, metadata, and evidence-hash readback.
+
+## Consensus and Security
+
+Validators compare jurisdiction, election ID, official version, `marking`, `overvote_correction`, `assistance`, `return_role`, and sorted/deduplicated `masks`. Status is derived from the accepted complete vector, not from a model-proposed status string. User-controlled and fetched text is delimited as untrusted data; embedded commands are data and cannot alter the extraction instructions.
+
+No eligibility, candidate, winner, turnout, or legal-compliance decision is made. Exact-byte hashing intentionally preserves provenance and does not whitespace-normalize submitted text.
 
 ## Consensus Binding Matrix
 
@@ -45,37 +65,50 @@ Builder integrations can use `read_status` as a release gate, use `read_action_v
 | result/status | deterministic derivation | yes | publish/hold/manual gate | derived from all bound fields | deterministic result binding | contradictory-result test |
 | evidence hashes | exact submitted text | yes | provenance readback | deterministic SHA-256 relation | exact provenance binding | mismatch revert |
 
-## Local verification
+## Local Verification
 
 ```powershell
 genvm-lint check contracts/ballot_marking_rule_change_gate.py
 pytest -q
 ```
 
-The tests cover current wording, each action-vector differential, metadata mismatch, ambiguity, malformed output, actual consensus disagreement rollback, replay/idempotency, correction, supersession, authorization, source allowlist, exact-byte hash binding, invalid transitions, prompt-injection data boundaries, and delimiter-breakout rejection. The samples are the exact text fixtures used for reproduction.
+The exact revision was verified with 29 passing tests and GenLayer lint/schema validation. Tests cover vector differentials, metadata mismatch, ambiguity, malformed output, disagreement rollback, replay/idempotency, correction, supersession, authorization, source allowlist, exact-byte hashing, invalid transitions, prompt injection, and delimiter breakout.
 
-## Studionet E2E matrix
+## Consensus Engineering Lessons
 
-The final matrix must execute on one exact deployed revision on GenLayer Studionet (chain ID `61999`) and record finalized successful consensus transactions, validator agreement, deterministic revert evidence where appropriate, one authoritative readback per scenario, and Explorer URLs. Required scenarios are:
+- Bind every action field, including arrays such as privacy masks, to the validator comparison.
+- Derive the consequential status from accepted vectors and metadata instead of trusting an oracle status string.
+- Treat exact source bytes as provenance; fixture newlines are part of the evidence hash.
+- Delimit fetched and publisher-controlled text as hostile data and test delimiter-breakout attempts.
+- A finalized transaction and an accepted consensus receipt still require authoritative state readback.
 
-| ID | Scenario | Expected result |
-| --- | --- | --- |
-| S01 | Equal official/submitted vector and metadata | `PUBLISH_CURRENT` |
-| S02 | Marking-only difference | `HOLD_STALE_RULE` |
-| S03 | Overvote/correction-only difference | `HOLD_STALE_RULE` |
-| S04 | Assistance-only difference | `HOLD_STALE_RULE` |
-| S05 | Return-role-only difference | `HOLD_STALE_RULE` |
-| S06 | Mask/privacy-only difference | `HOLD_STALE_RULE` |
-| S07 | Omitted or ambiguous action | `MANUAL_AUTHORITY_CHECK` |
-| S08 | Wrong jurisdiction/election/version metadata | `HOLD_STALE_RULE` |
-| S09 | `samples/prompt_injection_ballot_help.txt` supplied as both official and help text; embedded command must be ignored | `PUBLISH_CURRENT`; vectors exactly `marking=mark one oval for your choice`, `overvote_correction=do not mark more than one choice; erase completely to correct`, `assistance=ask a poll worker for assistance`, `return_role=return the ballot to the poll worker`, `masks=[use a privacy sleeve]`; authoritative vector readback required |
-| S10 | Authorization, allowlist, hash, and invalid-state failures | deterministic revert; no state drift |
-| S11 | Identical replay | idempotent; no state drift |
-| S12 | Held revision correction and reassessment | `PUBLISH_CURRENT` after correction |
-| S13 | Authority supersession | `SUPERSEDED`; future writes blocked |
+## Reusable Integrations
 
-RPC efficiency plan: deploy once; reuse the deployment and independent rule IDs; precompute exact hashes and expected vectors; send one transaction per logical write; use bounded polling and cache each terminal receipt; perform one authoritative `read_rule`/`read_action_vectors` snapshot per scenario; retry only after checking hash, nonce, Explorer, and pre-state. No scenario is omitted to save quota.
+- A publication workflow can call `read_status` before making revised voter help visible.
+- An observer UI can display `read_action_vectors` to show precisely which instructions were compared.
+- A multi-election pipeline can bind each rule to its jurisdiction, election, and official version through `read_rule`.
 
-## Network target
+## Limitations
 
-Studionet is the only deployment/evidence target for this workflow. No contract address or live transaction claim is made until the exact revision passes PRE-DEPLOY and the full E2E matrix is executed.
+This primitive only compares explicit voter-action instructions. It does not determine eligibility, candidate choice, winners, turnout, legal compliance, source truth, or whether an election authority's wording is legally sufficient. Ambiguity and validator disagreement intentionally stop publication and require authority review.
+
+## Repository Structure
+
+```text
+contracts/ballot_marking_rule_change_gate.py
+tests/test_ballot_marking_rule_change_gate.py
+samples/official_ballot_help.txt
+samples/submitted_ballot_help.txt
+samples/prompt_injection_ballot_help.txt
+verification/local-checks.md
+verification/e2e-matrix.md
+README.md
+Notes.md
+RESEARCH.md
+requirements.txt
+LICENSE
+```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
